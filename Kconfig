@@ -1,0 +1,18 @@
+#
+# Copyright (c) 2021 Nordic Semiconductor ASA
+#
+# SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+#
+
+menu "Common Application Framework sample"
+
+module = LED_MODULE
+module-str = led module
+source "subsys/logging/Kconfig.template.log_config"
+
+rsource "drivers/Kconfig"
+endmenu
+
+menu "Zephyr Kernel"
+source "Kconfig.zephyr"
+endmenu

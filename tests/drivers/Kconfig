@@ -1,0 +1,9 @@
+
+menu "uart ipc service backend test"
+
+rsource "../../drivers/Kconfig"
+endmenu
+
+menu "Zephyr Kernel"
+source "Kconfig.zephyr"
+endmenu

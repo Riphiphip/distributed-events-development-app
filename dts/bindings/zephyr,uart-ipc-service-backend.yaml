@@ -1,0 +1,26 @@
+description: |
+  UART based ipc service backend.
+
+compatible: "zephyr,uart-ipc-service-backend"
+
+include: "uart-device.yaml"
+
+properties:
+  
+  max_endpoint_name_length:
+    type: int
+    default: 32
+    description: |
+      Maximum length of the endpoint name.
+  
+  max_endpoint_count:
+    type: int
+    default: 1
+    description: |
+      Maximum number of endpoints.
+
+  rx_timeout:
+    type: int
+    default: -1
+    description: |
+      Maximum allowed time between start of valid frames given in microseconds. Set to -1 to disable timeout.

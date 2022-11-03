@@ -1,0 +1,12 @@
+
+menuconfig IPC_SERVICE_BACKEND_UART
+    bool "Enable UART based IPC service backend"
+    depends on SERIAL && IPC_SERVICE && UART_ASYNC_API
+
+if IPC_SERVICE_BACKEND_UART
+
+module = IPC_BACKEND_UART
+module-str = uart ipc service backend driver
+source "subsys/logging/Kconfig.template.log_config"
+
+endif
