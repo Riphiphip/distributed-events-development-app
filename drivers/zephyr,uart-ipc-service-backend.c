@@ -162,7 +162,7 @@ rx_slab_buffer_alloc_failed:
 
 /**
  * @brief Packages the data into an array of frames. The returned array is suitable for passing to uart_tx.
- * Th array is heap allocated and must eventually be freed.
+ * The array is heap allocated and must eventually be freed.
  *
  * @param data Data to be packaged
  * @param len Length of the data
