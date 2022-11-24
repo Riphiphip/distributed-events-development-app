@@ -1,4 +1,5 @@
 #include <zephyr/fff.h>
+#include <zephyr/random/rand32.h>
 #include <zephyr/ztest.h>
 
 #include "../../drivers/zephyr,uart-ipc-service-backend.c"
@@ -19,6 +20,12 @@ static struct uart_ipc_service_backend_suite_fixture {
     struct backend_data instance_data;
     struct device instance;
     struct uart_event uart_event;
+    struct uart_ipc_frame frame;
+    struct buffer_container {
+        void **buffers;
+        size_t count;
+        size_t max;
+    } buffer_container;  // Used for tracking heap allocated buffers that need to be freed after each test.
 };
 
 static void *suite_setup(void) {
@@ -42,32 +49,89 @@ static void suite_before(void *f) {
         .bound = fake_endpoint_cb_bound,
         .error = fake_endpoint_cb_error,
     };
+
+    fixture->buffer_container.max = 2;
+    fixture->buffer_container.buffers = k_malloc(sizeof(void *) * fixture->buffer_container.max);
+}
+
+static void suite_after(void *f) {
+    struct uart_ipc_service_backend_suite_fixture *fixture = f;
+
+    for (size_t i = 0; i < fixture->buffer_container.count; i++) {
+        k_free(fixture->buffer_container.buffers[i]);
+    }
+
+    k_free(fixture->buffer_container.buffers);
 }
 
 static void suite_teardown(void *f) {
     k_free(f);
 }
 
-ZTEST_SUITE(uart_ipc_service_backend_suite, NULL, suite_setup, suite_before, NULL, suite_teardown);
+ZTEST_SUITE(uart_ipc_service_backend_suite, NULL, suite_setup, suite_before, suite_after, suite_teardown);
 
-/*================================= Tests ===============================*/
+/* Utility */
 
+static struct sized_buffer {
+    size_t size;
+    void *data;
+};
+
+static int register_test_buffer(void *buffer, struct uart_ipc_service_backend_suite_fixture *fixture) {
+
+    fixture->buffer_container.buffers[fixture->buffer_container.count] = buffer;
+    fixture->buffer_container.count++;
+
+    if (fixture->buffer_container.count >= fixture->buffer_container.max) {
+        void *new_buf = k_malloc(sizeof(void *) * fixture->buffer_container.max * 2);
+        memcpy(new_buf, fixture->buffer_container.buffers, sizeof(void *) * fixture->buffer_container.max);
+        k_free(fixture->buffer_container.buffers);
+        fixture->buffer_container.buffers = new_buf;
+        fixture->buffer_container.max *= 2;
+    }
+}
+
+static int free_test_buffer(void *buffer, struct uart_ipc_service_backend_suite_fixture *fixture) {
+    k_free(buffer);
+    for (size_t i = 0; i < fixture->buffer_container.count; i++) {
+        if (fixture->buffer_container.buffers[i] == buffer) {
+            fixture->buffer_container.buffers[i] = NULL;
+            return 0;
+        }
+    }
+    return 0;
+}
+
+/* Endpoint callback functions */
+
+/* Error callbacks */
 void endpoint_error_callback_expect_frame_wrong_size(const char *message, void *priv) {
-    fake_endpoint_cb_error(message, priv); // Call to track number of error callbacks
+    fake_endpoint_cb_error(message, priv);  // Call to track number of error callbacks
     char msg[] = "Received data is not a valid frame. IPC instance is in an invalid state";
     zassert_mem_equal(message, msg, sizeof(msg), "Wrong error message");
 }
 
-ZTEST_F(uart_ipc_service_backend_suite, test_error_frame_wrong_size) {
+/* Receive callbacks */
 
+void endpoint_receive_callback_validate_data(const void *data, size_t len, void *priv) {
+    fake_endpoint_cb_received(data, len, priv);  // Call to track number of receive callbacks
+
+    struct sized_buffer *expected_result = (struct sized_buffer *)priv;
+
+    zassert_equal(len, expected_result->size, "Wrong data size");
+    zassert_mem_equal(data, expected_result->data, len, "Wrong data");
+}
+
+/*================================= Tests ===============================*/
+
+ZTEST_F(uart_ipc_service_backend_suite, test_error_frame_wrong_size) {
     fixture->uart_event = (struct uart_event){
         .type = UART_RX_RDY,
         .data.rx.buf = NULL,
-        .data.rx.len = sizeof(struct uart_ipc_frame) -1, // Received 1 byte less than expected
+        .data.rx.len = sizeof(struct uart_ipc_frame) - 1,  // Received 1 byte less than expected
     };
 
     fixture->instance_data.endpoint.cfg.cb.error = endpoint_error_callback_expect_frame_wrong_size;
-
 
     uart_callback(NULL, &fixture->uart_event, &fixture->instance);
 
@@ -75,3 +139,39 @@ ZTEST_F(uart_ipc_service_backend_suite, test_error_frame_wrong_size) {
     zassert_equal(0, fake_endpoint_cb_received_fake.call_count, "Wrong number of calls to endpoint received callback");
     zassert_equal(0, fake_endpoint_cb_bound_fake.call_count, "Wrong number of calls to endpoint bound callback");
 }
+
+ZTEST_F(uart_ipc_service_backend_suite, test_roundtrip_data_frame_creation) {
+    size_t data_length = 3 * sizeof(((struct uart_ipc_frame *)0)->frag) + 7;
+    const uint8_t data[data_length];
+    zassert_not_null(data, "Failed to allocate memory for test data");
+
+    sys_rand_get(data, data_length);
+    size_t n_frames = 0;
+    struct uart_ipc_frame *frames = create_frames(data, data_length, &n_frames);
+
+    register_test_buffer(frames, fixture);
+
+    zassert_equal(n_frames > 0, true, "Frame count should be greater than 0");
+
+    const uint8_t unwrapped_data[data_length];
+    zassert_not_null(unwrapped_data, "Failed to allocate memory for unwrapped data");
+
+    size_t total_unwrapped_bytes = 0;
+
+    for (int i = 0; i < n_frames; ++i) {
+        struct uart_ipc_frame *frame = &frames[i];
+        size_t unwrapped_bytes = 0;
+        int err = unwrap_frame(unwrapped_data, data_length, frame, &unwrapped_bytes);
+        zassert_equal(err, 0, "Failed to unwrap frame %d/%d. Error code: %d", i, n_frames, err);
+        total_unwrapped_bytes += unwrapped_bytes;
+        zassert_equal(total_unwrapped_bytes > data_length, false,
+                      "Unwrapped data is larger than original data after %d/%d frames", i, n_frames);
+    }
+    free_test_buffer(frames, fixture);
+
+    zassert_equal(total_unwrapped_bytes, data_length, "Unwrapped data is not the same size as original data. Expected %d, got %d",
+                  data_length, total_unwrapped_bytes);
+
+    zassert_mem_equal(data, unwrapped_data, data_length, "Unwrapped data is not the same as original data");
+}
+

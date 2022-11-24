@@ -4,6 +4,7 @@
 #include <sys/util.h>
 #include <zephyr/drivers/uart.h>
 #include <zephyr/ipc/ipc_service_backend.h>
+#include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/crc.h>
 LOG_MODULE_REGISTER(IPC_BACKEND_UART, CONFIG_IPC_BACKEND_UART_LOG_LEVEL);
 
@@ -169,9 +170,9 @@ rx_slab_buffer_alloc_failed:
  * @param n_frames Number of frames in the returned array
  * @return struct uart_ipc_frame*
  */
-static struct uart_ipc_frame *create_frames(const void *data, size_t len, size_t *n_frames) {
-    size_t max_frag_size = sizeof(((struct uart_ipc_frame *)0)->frag);
-    size_t num_frames = len / max_frag_size;
+static struct uart_ipc_frame *create_frames(const void *data, uint16_t len, size_t *n_frames) {
+    uint16_t max_frag_size = (uint8_t)sizeof(((struct uart_ipc_frame *)0)->frag);
+    uint16_t num_frames = (uint16_t)(len / max_frag_size);
     if (len % max_frag_size != 0) {
         num_frames++;
     }
@@ -183,16 +184,61 @@ static struct uart_ipc_frame *create_frames(const void *data, size_t len, size_t
     }
 
     for (int i = 0; i < num_frames; ++i) {
-        frames[i].total_data_length = len;
-        frames[i].frag_start = i * max_frag_size;
-        frames[i].frag_len = MIN(max_frag_size, len - frames[i].frag_start);
-        memcpy(frames[i].frag, (uint8_t *)data + frames[i].frag_start, frames[i].frag_len);
-        frames[i].crc = crc32_ieee((uint8_t *)&frames[i], sizeof(frames[i]) - sizeof(frames[i].crc));  // TODO: Calculate CRC
+        uint16_t frag_start = i * max_frag_size;
+        uint8_t frag_len = MIN(max_frag_size, len - frag_start);
+
+        frames[i].total_data_length = sys_cpu_to_le16(len);
+        frames[i].frag_start = sys_cpu_to_le16(frag_start);
+        frames[i].frag_len = frag_len;
+        memcpy(frames[i].frag, (uint8_t *)data + frag_start, frag_len);
+        frames[i].crc = sys_cpu_to_le32(crc32_ieee((uint8_t *)&frames[i], sizeof(frames[i]) - sizeof(frames[i].crc)));  // TODO: Calculate CRC
     }
 
     *n_frames = num_frames;
 
     return frames;
+}
+
+/**
+ * @brief Extracts data from a frame into a buffer. The buffer must be large enough to hold the complete
+ *        data from the transaction.
+ *
+ * @param dest_buf Buffer to hold received data
+ * @param dest_buf_len Total size of the destination buffer
+ * @param frame Frame to be unwrapped
+ * @param added_data_len Number of bytes added to the destination buffer. Does not account for overlapping frames or preexisting data.
+ * @return 0 on success, negative errno on failure: -EINVAL if crc check fails. -ENOMEM if the fragment would overflow the destination buffer.
+ */
+static int unwrap_frame(void *dest_buf, size_t dest_buf_len, struct uart_ipc_frame *frame, size_t *added_data_len) {
+    uint32_t crc = crc32_ieee((uint8_t *)frame, sizeof(*frame) - sizeof(frame->crc));
+
+    struct uart_ipc_frame_header {
+        uint16_t total_data_length;
+        uint16_t frag_start;
+        uint8_t frag_len;
+        uint32_t crc;
+    } frame_hdr = { // Frame converted to CPU endianness
+        .total_data_length = sys_le16_to_cpu(frame->total_data_length),
+        .frag_start = sys_le16_to_cpu(frame->frag_start),
+        .frag_len = frame->frag_len,
+        .crc = sys_le32_to_cpu(frame->crc),
+    };
+
+    if (crc != frame_hdr.crc) {
+        LOG_ERR("CRC mismatch. Fragment is likely corrupted");
+        return -EINVAL;
+    }
+
+    if (frame_hdr.frag_start + frame_hdr.frag_len > dest_buf_len) {
+        LOG_ERR("Frame overflows destination buffer");
+        return -ENOMEM;
+    }
+
+    /*Uses frame instead of sys_end_frame to save on*/
+    memcpy((uint8_t *)dest_buf + frame_hdr.frag_start, frame->frag, (size_t) frame_hdr.frag_len); 
+
+    *added_data_len = frame_hdr.frag_len;
+    return 0;
 }
 
 static int send(const struct device *instance, void *token, const void *data, size_t len) {
@@ -276,33 +322,10 @@ static inline int receive_frame(struct backend_endpoint *endpoint, struct uart_i
         endpoint->rx_buf_size = frame->total_data_length;
     }
 
-    if (frame->total_data_length > endpoint->rx_buf_size) {
-        LOG_ERR("Received data is too large for the endpoint buffer. Fragment is likely corrupted or several transfers are in progress.\r\nData length: %d, buffer size: %d", frame->total_data_length, endpoint->rx_buf_size);
-        if (endpoint->cfg.cb.error != NULL) {
-            endpoint->cfg.cb.error("Received data is too large for the endpoint buffer. Fragment is likely corrupted or several transfers are in progress.", endpoint->cfg.priv);
-        }
-        return -EINVAL;
-    }
+    size_t fragment_size = 0;
+    int err = unwrap_frame(endpoint->rx_buffer, endpoint->rx_buf_size, frame, &fragment_size);
 
-    if (frame->frag_start + frame->frag_len > frame->total_data_length) {
-        LOG_ERR("Fragment falls outside of expected data. Fragment is likely corrupted or several transfers are in progress");
-        if (endpoint->cfg.cb.error != NULL) {
-            endpoint->cfg.cb.error("Fragment falls outside of expected data. Fragment is likely corrupted or several transfers are in progress", endpoint->cfg.priv);
-        }
-        return -EINVAL;
-    }
-
-    uint32_t crc = crc32_ieee((uint8_t *)frame, sizeof(*frame) - sizeof(frame->crc));
-    if (crc != frame->crc) {
-        LOG_ERR("CRC mismatch. Fragment is likely corrupted");
-        if (endpoint->cfg.cb.error != NULL) {
-            endpoint->cfg.cb.error("CRC mismatch. Fragment is likely corrupted", endpoint->cfg.priv);
-        }
-        return -EINVAL;
-    }
-
-    memcpy(&endpoint->rx_buffer[frame->frag_start], frame->frag, frame->frag_len);
-    endpoint->bytes_received += frame->frag_len;
+    endpoint->bytes_received += fragment_size;
 
     if (endpoint->bytes_received == frame->total_data_length) {
         endpoint->cfg.cb.received(endpoint->rx_buffer, endpoint->bytes_received, endpoint->cfg.priv);
@@ -316,7 +339,6 @@ static inline int receive_frame(struct backend_endpoint *endpoint, struct uart_i
     k_work_reschedule(&endpoint->rx_timeout_work, rx_timeout); /* Start timeout for next frame */
     return 0;
 }
-
 
 static void uart_callback(const struct device *uart_dev, struct uart_event *evt, void *user_data) {
     struct device *instance = (struct device *)user_data;
@@ -381,10 +403,10 @@ static void uart_callback(const struct device *uart_dev, struct uart_event *evt,
             break;
         }
         case UART_RX_DISABLED: {
-            if (endpoint->cfg.cb.error != NULL) {
-                endpoint->cfg.cb.error("Receiving was disabled", endpoint->cfg.priv);
-            }
             LOG_DBG("UART_RX_DISABLED");
+            if (endpoint->cfg.cb.error != NULL) {
+                endpoint->cfg.cb.error("Receiving was disabled, attempting to restart.", endpoint->cfg.priv);
+            }
             break;
         }
         case UART_RX_STOPPED: {
@@ -400,9 +422,9 @@ static void uart_callback(const struct device *uart_dev, struct uart_event *evt,
 }
 
 #define DEFINE_BACKEND_DEVICE(inst)                                \
-    static struct backend_config backend_config_##inst = {   \
+    static struct backend_config backend_config_##inst = {         \
         .uart_dev = DEVICE_DT_GET(DT_INST_BUS(inst)),              \
-        .rx_timeout_usec = DT_INST_PROP(inst, rx_timeout),          \
+        .rx_timeout_usec = DT_INST_PROP(inst, rx_timeout),         \
     };                                                             \
     static struct backend_data backend_data_##inst = {0};          \
     DEVICE_DT_INST_DEFINE(inst,                                    \
