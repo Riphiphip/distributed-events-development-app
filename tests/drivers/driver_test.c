@@ -183,3 +183,73 @@ ZTEST_F(uart_ipc_service_backend_suite, test_roundtrip_data_frame_creation) {
     zassert_mem_equal(data, unwrapped_data, data_length, "Unwrapped data is not the same as original data");
 }
 
+ZTEST_F(uart_ipc_service_backend_suite, test_one_frame_received_successfully) {
+    uint16_t total_data_length = sizeof(((struct uart_ipc_frame *)0)->frag);
+    uint8_t *data = k_malloc(total_data_length);
+    register_test_buffer(data, fixture);
+
+    sys_rand_get(data, total_data_length);
+
+    size_t n_frames = 0;
+    struct uart_ipc_frame *frames = create_frames(data, total_data_length, &n_frames);
+    register_test_buffer(frames, fixture);
+
+    zassert_equal(n_frames, 1, "Wrong number of frames");
+
+    fixture->uart_event = (struct uart_event){
+        .type = UART_RX_RDY,
+        .data.rx.buf = frames,
+        .data.rx.len = sizeof(struct uart_ipc_frame) * n_frames,
+    };
+
+    fixture->instance_data.endpoint.cfg.cb.received = endpoint_receive_callback_validate_data;
+
+    struct sized_buffer expected_result = {
+        .size = total_data_length,
+        .data = data,
+    };
+
+    fixture->instance_data.endpoint.cfg.priv = &expected_result;
+
+    uart_callback(NULL, &fixture->uart_event, &fixture->instance);
+
+    zassert_equal(fake_endpoint_cb_error_fake.call_count, 0, "Wrong number of calls to endpoint error callback");
+    zassert_equal(fake_endpoint_cb_received_fake.call_count, 1, "Wrong number of calls to endpoint received callback");
+    zassert_equal(fake_endpoint_cb_bound_fake.call_count, 0, "Wrong number of calls to endpoint bound callback");
+}
+
+ZTEST_F(uart_ipc_service_backend_suite, test_multiple_frames_received_successfully) {
+
+    fixture->instance_data.endpoint.cfg.cb.received = endpoint_receive_callback_validate_data;
+
+    uint16_t total_data_length = sizeof(((struct uart_ipc_frame *)0)->frag) * 10 + 5;
+    uint8_t *data = k_malloc(total_data_length);
+    register_test_buffer(data, fixture);
+
+    sys_rand_get(data, total_data_length);
+
+    size_t n_frames = 0;
+    struct uart_ipc_frame *frames = create_frames(data, total_data_length, &n_frames);
+    register_test_buffer(frames, fixture);
+
+    zassert_equal(n_frames > 0, true, "Wrong number of frames");
+
+    struct sized_buffer expected_result = {
+        .size = total_data_length,
+        .data = data,
+    };
+    fixture->instance_data.endpoint.cfg.priv = &expected_result;
+
+    for (int i = 0; i < n_frames; ++i){
+        fixture->uart_event = (struct uart_event){
+            .type = UART_RX_RDY,
+            .data.rx.buf = &frames[i],
+            .data.rx.len = sizeof(struct uart_ipc_frame),
+        };
+        uart_callback(NULL, &fixture->uart_event, &fixture->instance);
+    } 
+
+    zassert_equal(fake_endpoint_cb_error_fake.call_count, 0, "Called %d times", fake_endpoint_cb_error_fake.call_count);
+    zassert_equal(fake_endpoint_cb_received_fake.call_count, 1, "Called %d times", fake_endpoint_cb_received_fake.call_count);
+    zassert_equal(fake_endpoint_cb_bound_fake.call_count, 0, "Called %d times", fake_endpoint_cb_bound_fake.call_count);
+}
