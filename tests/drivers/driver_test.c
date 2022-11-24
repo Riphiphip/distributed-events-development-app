@@ -52,6 +52,9 @@ static void suite_before(void *f) {
 
     fixture->buffer_container.max = 2;
     fixture->buffer_container.buffers = k_malloc(sizeof(void *) * fixture->buffer_container.max);
+
+    k_work_init(&fixture->instance_data.free_tx_work, free_tx_work_handler);
+    k_work_init_delayable(&fixture->instance_data.endpoint.rx_timeout_work, endpoint_rx_timeout_handler);
 }
 
 static void suite_after(void *f) {
