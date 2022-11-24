@@ -11,6 +11,11 @@ FAKE_VOID_FUNC(fake_endpoint_cb_received, const void *, size_t, void *);
 FAKE_VOID_FUNC(fake_endpoint_cb_bound, void *);
 FAKE_VOID_FUNC(fake_endpoint_cb_error, const char *, void *);
 
+void endpoint_error_callback_default(const char *message, void *priv) {
+    fake_endpoint_cb_error(message, priv);  // Call to track number of error callbacks
+    LOG_ERR("Endpoint error callback: %s", message);
+}
+
 #define FAKE_LIST(OP)             \
     OP(fake_endpoint_cb_received) \
     OP(fake_endpoint_cb_bound)    \
@@ -47,7 +52,7 @@ static void suite_before(void *f) {
     fixture->instance_data.endpoint.cfg.cb = (struct ipc_service_cb){
         .received = fake_endpoint_cb_received,
         .bound = fake_endpoint_cb_bound,
-        .error = fake_endpoint_cb_error,
+        .error = endpoint_error_callback_default,
     };
 
     fixture->buffer_container.max = 2;
