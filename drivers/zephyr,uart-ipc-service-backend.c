@@ -407,6 +407,21 @@ static void uart_callback(const struct device *uart_dev, struct uart_event *evt,
             if (endpoint->cfg.cb.error != NULL) {
                 endpoint->cfg.cb.error("Receiving was disabled, attempting to restart.", endpoint->cfg.priv);
             }
+            uint8_t *rx_buf;
+            int err = k_mem_slab_alloc(&data->rx_slab, (void **)&rx_buf, K_NO_WAIT);
+            if (err) {
+                LOG_ERR("Failed to allocate new buffer from rx slab: %d", err);
+                if (endpoint->cfg.cb.error != NULL) {
+                    endpoint->cfg.cb.error("Failed to allocate new buffer from rx slab. Receiving could not be resumed", endpoint->cfg.priv);
+                }
+                break;
+            }
+            err = uart_rx_enable(uart_dev, rx_buf, data->rx_slab.block_size, 100);
+            if (err) {
+                LOG_ERR("Failed to enable receiving: %d", err);
+                if (endpoint->cfg.cb.error != NULL) {
+                    endpoint->cfg.cb.error("Failed to enable receiving. Receiving could not be resumed", endpoint->cfg.priv);
+                }
             break;
         }
         case UART_RX_STOPPED: {
@@ -418,6 +433,7 @@ static void uart_callback(const struct device *uart_dev, struct uart_event *evt,
         }
         default:
             break;
+        }
     }
 }
 
