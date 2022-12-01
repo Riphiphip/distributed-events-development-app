@@ -15,6 +15,7 @@
 
 &uart1 {
     status = "okay";
+    current-speed = < 115200 >;
     pinctrl-0 = <&uart1_default_app>;
     pinctrl-1 = <&uart1_sleep_app>;
     pinctrl-names = "default", "sleep";

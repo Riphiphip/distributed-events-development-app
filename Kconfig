@@ -6,9 +6,13 @@
 
 menu "Common Application Framework sample"
 
-config TRANSMIT
-    bool "Set to true to transmit events, set to false to receive"
-    default y
+choice
+    prompt "Ping or pong"
+    config PING
+        bool "Ping"
+    config PONG
+        bool "Pong"
+endchoice
 
 module = APPLICATION
 module-str = application module

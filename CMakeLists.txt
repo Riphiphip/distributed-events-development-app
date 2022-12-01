@@ -11,7 +11,8 @@ project(NONE)
 # NORDIC SDK APP START
 target_sources(app PRIVATE
   src/main.c
-  src/shared_event.c
+  src/ping_event.c
+  src/pong_event.c
 )
 # NORDIC SDK APP END
 
