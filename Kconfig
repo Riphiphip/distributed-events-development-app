@@ -6,8 +6,12 @@
 
 menu "Common Application Framework sample"
 
-module = LED_MODULE
-module-str = led module
+config TRANSMIT
+    bool "Set to true to transmit events, set to false to receive"
+    default y
+
+module = APPLICATION
+module-str = application module
 source "subsys/logging/Kconfig.template.log_config"
 
 rsource "drivers/Kconfig"

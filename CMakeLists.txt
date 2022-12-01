@@ -11,7 +11,7 @@ project(NONE)
 # NORDIC SDK APP START
 target_sources(app PRIVATE
   src/main.c
-  src/modules/led_module.c
+  src/shared_event.c
 )
 # NORDIC SDK APP END
 
@@ -19,9 +19,6 @@ target_sources(app PRIVATE
 zephyr_include_directories(
   src
   configuration/${BOARD}
-  )
-
-target_sources_ifdef(CONFIG_CAF_SAMPLE_LED_STATE
-  app PRIVATE src/modules/led_state.c)
+)
 
 add_subdirectory(drivers)
