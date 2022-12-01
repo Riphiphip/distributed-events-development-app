@@ -115,7 +115,7 @@ static int open_instance(const struct device *instance) {
     if (err) {
         LOG_ERR("Failed to initialize rx slab %d", err);
         goto rx_slab_init_failed;
-    };
+    }
 
     void *initial_buf = NULL;
     err = k_mem_slab_alloc(&(data->rx_slab), &initial_buf, K_NO_WAIT);
@@ -177,7 +177,7 @@ static struct uart_ipc_frame *create_frames(const void *data, uint16_t len, size
         return NULL;
     }
 
-    for (int i = 0; i < num_frames; ++i) {
+    for (uint16_t i = 0; i < num_frames; ++i) {
         uint16_t frag_start = i * max_frag_size;
         uint8_t frag_len = MIN(max_frag_size, len - frag_start);
 
@@ -185,7 +185,7 @@ static struct uart_ipc_frame *create_frames(const void *data, uint16_t len, size
         frames[i].frag_start = sys_cpu_to_le16(frag_start);
         frames[i].frag_len = frag_len;
         memcpy(frames[i].frag, (uint8_t *)data + frag_start, frag_len);
-        frames[i].crc = sys_cpu_to_le32(crc32_ieee((uint8_t *)&frames[i], sizeof(frames[i]) - sizeof(frames[i].crc)));  // TODO: Calculate CRC
+        frames[i].crc = sys_cpu_to_le32(crc32_ieee((uint8_t *)&frames[i], sizeof(frames[i]) - sizeof(frames[i].crc)));
     }
 
     *n_frames = num_frames;
@@ -211,7 +211,7 @@ static int unwrap_frame(void *dest_buf, size_t dest_buf_len, struct uart_ipc_fra
         uint16_t frag_start;
         uint8_t frag_len;
         uint32_t crc;
-    } frame_hdr = { // Frame converted to CPU endianness
+    } frame_hdr = { // Frame metadata converted to CPU endianness
         .total_data_length = sys_le16_to_cpu(frame->total_data_length),
         .frag_start = sys_le16_to_cpu(frame->frag_start),
         .frag_len = frame->frag_len,
@@ -229,7 +229,7 @@ static int unwrap_frame(void *dest_buf, size_t dest_buf_len, struct uart_ipc_fra
     }
 
     /*Uses frame instead of sys_end_frame to save on*/
-    memcpy((uint8_t *)dest_buf + frame_hdr.frag_start, frame->frag, (size_t) frame_hdr.frag_len); 
+    memcpy((uint8_t *)dest_buf + frame_hdr.frag_start, frame->frag, (size_t)frame_hdr.frag_len);
 
     *added_data_len = frame_hdr.frag_len;
     return 0;
@@ -325,6 +325,9 @@ static inline int receive_frame(struct backend_endpoint *endpoint, struct uart_i
 
     size_t fragment_size = 0;
     int err = unwrap_frame(endpoint->rx_buffer, endpoint->rx_buf_size, frame, &fragment_size);
+    if (err) {
+        return err;
+    }
 
     endpoint->bytes_received += fragment_size;
 
