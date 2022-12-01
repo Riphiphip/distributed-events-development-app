@@ -20,11 +20,6 @@ struct uart_ipc_frame {
     uint32_t crc;                // crc32-ieee for the frame
 } __packed__;
 
-enum ept_send_state {
-    EPT_SEND_STATE_READY,
-    EPT_SEND_STATE_SENDING,
-};
-
 struct backend_endpoint {
     struct ipc_ept_cfg cfg;
     bool is_registered;
@@ -40,9 +35,9 @@ struct backend_data {
     bool is_opened;
     struct k_mem_slab rx_slab;
     k_timeout_t rx_timeout;
-    enum ept_send_state send_state;
     uint8_t *tx_buffer;
     struct k_work free_tx_work;
+    struct k_sem tx_semaphore;
 };
 
 struct backend_config {
@@ -147,7 +142,6 @@ static int open_instance(const struct device *instance) {
     }
 
     data->is_opened = true;
-    data->send_state = EPT_SEND_STATE_READY;
     return 0;
 
 // Cleanup in case of failure
@@ -246,7 +240,12 @@ static int send(const struct device *instance, void *token, const void *data, si
     const struct backend_config *instance_config = instance->config;
     struct backend_endpoint *endpoint = (struct backend_endpoint *)token;
 
-    if (instance_data->send_state == EPT_SEND_STATE_SENDING) {
+    if (!instance_data->is_opened) {
+        LOG_ERR("UART backend not opened");
+        return -EIO;
+    }
+
+    if (k_sem_take(&instance_data->tx_semaphore, K_FOREVER) != 0) {
         return -EBUSY;
     }
 
@@ -275,7 +274,7 @@ static void free_tx_work_handler(struct k_work *work_item) {
     LOG_DBG("Freeing tx buffer");
     struct backend_data *instance_data = CONTAINER_OF(work_item, struct backend_data, free_tx_work);
     k_free((void *)instance_data->tx_buffer);
-    instance_data->send_state = EPT_SEND_STATE_READY;
+    k_sem_give(&instance_data->tx_semaphore);
 }
 
 const static struct ipc_service_backend backend_ops = {
@@ -287,6 +286,7 @@ const static struct ipc_service_backend backend_ops = {
 static int backend_init(const struct device *dev) {
     const struct backend_config *config = dev->config;
     struct backend_data *data = dev->data;
+    data->is_opened = false;
 
     if (!device_is_ready(config->uart_dev)) {
         LOG_ERR("UART device %s is not ready", config->uart_dev->name);
@@ -295,6 +295,7 @@ static int backend_init(const struct device *dev) {
     data->rx_timeout = K_USEC(config->rx_timeout_usec);
 
     k_work_init(&data->free_tx_work, free_tx_work_handler);
+    k_sem_init(&data->tx_semaphore, 1, 1);
     return 0;
 }
 
